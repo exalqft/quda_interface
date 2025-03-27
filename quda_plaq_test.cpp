@@ -210,10 +210,10 @@ struct deviceGaugeField_quda {
       Policy<rank>(make_repeated_sequence<rank>(0), {N0,N1,N2,N3}, tiling),
       KOKKOS_LAMBDA(const StreamIndex i, const StreamIndex j, const StreamIndex k, const StreamIndex l)
       {
+        // copy gauge and reorder according to QUDA_QDP_GAUGE_ORDER
         const StreamIndex i_lex = i + j*N0 + k*N0*N1 + l*N0*N1*N2;
         const StreamIndex oddBit = (i+j+k+l) & 1;
         const StreamIndex quda_idx = oddBit*volume/2 + i_lex/2;
-        // for(int mu = 0; mu < Nd; ++mu){
           #pragma unroll
           for(int c1 = 0; c1 < Nc; ++c1){
             #pragma unroll
@@ -224,7 +224,6 @@ struct deviceGaugeField_quda {
               V3(quda_idx,c1,c2) = g.view(i,j,k,l,3,c1,c2);
             }
           }
-        // }
       }
     );
     Kokkos::fence();
@@ -441,7 +440,7 @@ int main(int argc, char *argv[]) {
     // compute plaquette in Kokkos
     plaq_kokkos = perform_plaquette(g);
 
-    printfQuda("Computed plaquette gauge precise is %16.15e (spatial = %16.15e, temporal = %16.15e)\n", plaq[0], plaq[1],
+    printfQuda("Computed plaquette gauge in QUDA is %16.15e (spatial = %16.15e, temporal = %16.15e)\n", plaq[0], plaq[1],
                plaq[2]);
 
     real_t fac = stream_array_size*stream_array_size*stream_array_size*stream_array_size*Nc*Nd*(Nd-1)/2.0;
