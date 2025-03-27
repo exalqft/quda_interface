@@ -13,6 +13,10 @@ set(Kokkos_ENABLE_AGGRESSIVE_VECTORIZATION "ON" CACHE BOOL "CMakeLists: Kokkos_E
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/kokkos/kokkos ${CMAKE_CURRENT_BINARY_DIR}/kokkos)
 
+
+find_package(MPI REQUIRED)
+include_directories(SYSTEM ${MPI_INCLUDE_PATH})
+
 # get QUDA
 set(QUDA_HOME "" CACHE PATH "path to QUDA")
 if("${QUDA_HOME}" STREQUAL "")
@@ -21,5 +25,5 @@ endif()
 FIND_LIBRARY(QUDA_LIB quda ${QUDA_HOME}/lib)
 include_directories(SYSTEM ${QUDA_HOME}/include)
 
-add_executable(quda_test quda_test.cpp)
-target_link_libraries(quda_test Kokkos::kokkos ${QUDA_LIB})
+add_executable(quda_plaq_test quda_plaq_test.cpp)
+target_link_libraries(quda_plaq_test Kokkos::kokkos ${QUDA_LIB} ${MPI_CXX_LIBRARIES})
