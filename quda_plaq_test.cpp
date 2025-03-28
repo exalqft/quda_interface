@@ -62,30 +62,61 @@ using val_t = Kokkos::complex<real_t>;
 
 using RNG = Kokkos::Random_XorShift1024_Pool<Kokkos::DefaultExecutionSpace>;
 
+using SUN =
+    Kokkos::Array<Kokkos::Array<val_t, Nc>, Nc>;
+
 using GaugeField = 
-    Kokkos::View<val_t****[Nd][Nc][Nc], Kokkos::MemoryTraits<Kokkos::Restrict>>;
+    Kokkos::View<SUN****[Nd], Kokkos::MemoryTraits<Kokkos::Restrict>>;
 
 using SUNField1D = 
-    Kokkos::View<val_t*[Nc][Nc], Kokkos::LayoutRight, Kokkos::MemoryTraits<Kokkos::Restrict>>;
+    Kokkos::View<SUN*, Kokkos::LayoutRight, Kokkos::MemoryTraits<Kokkos::Restrict>>;
 
 #if defined(KOKKOS_ENABLE_CUDA)
 using constGaugeField = 
-    Kokkos::View<const val_t****[Nd][Nc][Nc], Kokkos::MemoryTraits<Kokkos::RandomAccess>>;
+    Kokkos::View<const SUN****[Nd], Kokkos::MemoryTraits<Kokkos::RandomAccess>>;
 
 using constSUNField1D = 
-    Kokkos::View<const val_t*[Nc][Nc], Kokkos::MemoryTraits<Kokkos::RandomAccess>>;
+    Kokkos::View<const SUN*, Kokkos::MemoryTraits<Kokkos::RandomAccess>>;
 #else
 using constGaugeField = 
-    Kokkos::View<const val_t****[Nd][Nc][Nc], Kokkos::MemoryTraits<Kokkos::Restrict>>;
+    Kokkos::View<const SUN****[Nd], Kokkos::MemoryTraits<Kokkos::Restrict>>;
 
 using constSUNField1D =
-    Kokkos::View<const val_t*[Nc][Nc], Kokkos::LayoutRight, Kokkos::MemoryTraits<Kokkos::Restrict>>;
+    Kokkos::View<const SUN*, Kokkos::LayoutRight, Kokkos::MemoryTraits<Kokkos::Restrict>>;
 #endif
 
 using StreamIndex = int;
 
 template <int rank>
 using Policy      = Kokkos::MDRangePolicy<Kokkos::Rank<rank>>;
+
+KOKKOS_FORCEINLINE_FUNCTION SUN operator*(const SUN & a, const SUN & b) {
+  SUN out;
+  #pragma unroll
+  for(int c1 = 0; c1 < Nc; ++c1){
+    #pragma unroll
+    for(int c2 = 0; c2 < Nc; ++c2){
+      out[c1][c2] = a[c1][0] * b[0][c2];
+      #pragma unroll
+      for(int ci = 1; ci < Nc; ++ci){
+        out[c1][c2] += a[c1][ci] * b[ci][c2];
+      }
+    }
+  }
+  return out;
+}
+
+KOKKOS_FORCEINLINE_FUNCTION SUN conj(const SUN & a) {
+  SUN out;
+  #pragma unroll
+  for(int c1 = 0; c1 < Nc; ++c1){
+    #pragma unroll
+    for(int c2 = 0; c2 < Nc; ++c2){
+      out[c1][c2] = Kokkos::conj(a[c2][c1]);
+    }
+  }
+  return out;
+}
 
 template <std::size_t... Idcs>
 constexpr Kokkos::Array<std::size_t, sizeof...(Idcs)>
@@ -164,7 +195,7 @@ struct deviceGaugeField {
           for(int c1 = 0; c1 < Nc; ++c1){
             #pragma unroll
             for(int c2 = 0; c2 < Nc; ++c2){
-              V(i,j,k,l,mu,c1,c2) = val_t(rand.drand(-1., 1.), rand.drand(-1., 1.));
+              V(i,j,k,l,mu)[c1][c2] = val_t(rand.drand(-1., 1.), rand.drand(-1., 1.));
             }
           }
         }
@@ -172,6 +203,14 @@ struct deviceGaugeField {
       }
     );
     Kokkos::fence();
+  }
+
+  KOKKOS_FORCEINLINE_FUNCTION SUN & operator()(const StreamIndex i, const StreamIndex j, const StreamIndex k, const StreamIndex l, const int mu) const {
+    return view(i,j,k,l,mu);
+  }
+
+  KOKKOS_FORCEINLINE_FUNCTION SUN & operator()(const StreamIndex i, const StreamIndex j, const StreamIndex k, const StreamIndex l, const int mu) {
+    return view(i,j,k,l,mu);
   }
 
   GaugeField view;
@@ -214,16 +253,10 @@ struct deviceGaugeField_quda {
         const StreamIndex i_lex = i + j*N0 + k*N0*N1 + l*N0*N1*N2;
         const StreamIndex oddBit = (i+j+k+l) & 1;
         const StreamIndex quda_idx = oddBit*volume/2 + i_lex/2;
-          #pragma unroll
-          for(int c1 = 0; c1 < Nc; ++c1){
-            #pragma unroll
-            for(int c2 = 0; c2 < Nc; ++c2){
-              V0(quda_idx,c1,c2) = g.view(i,j,k,l,0,c1,c2);
-              V1(quda_idx,c1,c2) = g.view(i,j,k,l,1,c1,c2);
-              V2(quda_idx,c1,c2) = g.view(i,j,k,l,2,c1,c2);
-              V3(quda_idx,c1,c2) = g.view(i,j,k,l,3,c1,c2);
-            }
-          }
+        V0(quda_idx) = g(i,j,k,l,0);
+        V1(quda_idx) = g(i,j,k,l,1);
+        V2(quda_idx) = g(i,j,k,l,2);
+        V3(quda_idx) = g(i,j,k,l,3);
       }
     );
     Kokkos::fence();
@@ -250,9 +283,9 @@ val_t perform_plaquette(const deviceGaugeField g_in)
     KOKKOS_LAMBDA(const StreamIndex i, const StreamIndex j, const StreamIndex k, const StreamIndex l,
                   val_t & lres)
     {
-      Kokkos::Array<Kokkos::Array<val_t,Nc>,Nc> lmu, lnu;
+      SUN lmu, lnu;
 
-      val_t tmu, tnu;
+      // val_t tmu, tnu;
 
       #pragma unroll
       for(int mu = 0; mu < Nd; ++mu){
@@ -268,21 +301,8 @@ val_t perform_plaquette(const deviceGaugeField g_in)
             const StreamIndex jpnu = nu == 1 ? (j + 1) % stream_array_size : j;
             const StreamIndex kpnu = nu == 2 ? (k + 1) % stream_array_size : k;
             const StreamIndex lpnu = nu == 3 ? (l + 1) % stream_array_size : l;
-            #pragma unroll
-            for(int c1 = 0; c1 < Nc; ++c1){
-              #pragma unroll
-              for(int c2 = 0; c2 < Nc; ++c2){
-                tmu = g(i,j,k,l,mu,c1,0) * g(ipmu,jpmu,kpmu,lpmu,nu,0,c2);
-                tnu = g(i,j,k,l,nu,c1,0) * g(ipnu,jpnu,kpnu,lpnu,mu,0,c2);
-                #pragma unroll
-                for(int ci = 1; ci < Nc; ++ci){
-                  tmu += g(i,j,k,l,mu,c1,ci) * g(ipmu,jpmu,kpmu,lpmu,nu,ci,c2);
-                  tnu += g(i,j,k,l,nu,c1,ci) * g(ipnu,jpnu,kpnu,lpnu,mu,ci,c2);
-                }
-                lmu[c1][c2] = tmu;
-                lnu[c1][c2] = tnu;
-              }
-            }
+            lmu = g(i,j,k,l,mu) * g(ipmu,jpmu,kpmu,lpmu,nu);
+            lnu = g(i,j,k,l,nu) * g(ipnu,jpnu,kpnu,lpnu,mu);
             #pragma unroll
             for(int c = 0; c < Nc; ++c){
               #pragma unroll
